@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-import logging
-
 import numpy as np
 
 from src.providers.base import LLMProvider
 from src.reasoning import prompts
-
-logger = logging.getLogger(__name__)
 
 
 class Reasoner:

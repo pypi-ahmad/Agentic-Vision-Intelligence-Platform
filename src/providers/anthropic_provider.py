@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import numpy as np
@@ -14,8 +13,6 @@ from src.providers.base import (
     ProviderError,
     ProviderRateLimitError,
 )
-
-logger = logging.getLogger(__name__)
 
 
 class AnthropicProvider(LLMProvider):

@@ -278,7 +278,7 @@ LangGraph `StateGraph` workflows with shared state and conditional routing.
 
 **`PipelineState`** (`state.py`): `TypedDict` with `total=False` (all fields optional). 25+ fields grouped into: Input, CV Results, Scene Memory, Events, Change Detection, Reasoning, Q&A, Alerts, Reports, Flow Control, Debug. The `_node_trace` field uses `Annotated[list[str], operator.add]` for append-only merge semantics. Factory function `empty_state()` returns a clean initial state dict with all defaults.
 
-**`nodes.py`**: 12 node functions (each takes `state: PipelineState` and returns a partial state dict), plus singleton management (`set_detector`, `set_reasoner_obj`, `clear_reasoner`, `get_scene_state`, `get_event_timeline`, `get_reasoner`, `reset_all`).
+**`nodes.py`**: 11 node functions (each takes `state: PipelineState` and returns a partial state dict), plus singleton management (`set_detector`, `set_reasoner_obj`, `clear_reasoner`, `get_scene_state`, `get_event_timeline`, `get_reasoner`, `reset_all`).
 
 **`graph.py`**: Three graph builders with four routing functions:
 

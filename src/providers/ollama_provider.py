@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import httpx
 import numpy as np
 
 from src.providers.base import LLMProvider, ProviderConnectionError, ProviderError
-
-logger = logging.getLogger(__name__)
 
 
 class OllamaProvider(LLMProvider):

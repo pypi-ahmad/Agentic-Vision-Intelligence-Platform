@@ -87,13 +87,7 @@ from src.orchestration.graph import (  # noqa: F401
 node_decide_llm = node_decide_reasoning  # old name used in existing tests
 _node_qa_cv = node_qa_cv                 # old private name
 
-
-def _empty_state() -> dict:
-    """Backward-compat alias — returns a fresh copy every time."""
-    return empty_state()
-
-
-# Kept as a property-like callable for old code that does {**_EMPTY_STATE, ...}
+# Kept for old code that does {**_EMPTY_STATE, ...}
 _EMPTY_STATE = empty_state()
 
 

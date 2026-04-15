@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -10,8 +9,6 @@ import numpy as np
 
 from config import get_settings
 from src.vision.models import load_yolo
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass

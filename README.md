@@ -183,7 +183,7 @@ The test suite contains **149 unit tests** covering config, input sources, visio
 │   │   └── reasoner.py          # Reasoner — task-method wrapper around any LLMProvider
 │   ├── orchestration/
 │   │   ├── state.py             # PipelineState TypedDict (25+ fields, append reducer for debug trace)
-│   │   ├── nodes.py             # 12 node functions, singleton management, session reset
+│   │   ├── nodes.py             # 11 node functions, singleton management, session reset
 │   │   ├── graph.py             # 3 graph builders, 4 routing functions, compiled workflow cache
 │   │   └── __init__.py          # Public API — process_frame(), ask_question(), generate_report()
 │   ├── reporting/
@@ -193,7 +193,7 @@ The test suite contains **149 unit tests** covering config, input sources, visio
 │   │   └── frame_utils.py       # BGR/RGB conversion, PIL/numpy, proportional resize
 │   └── ui/
 │       └── streamlit_app.py     # Single Streamlit entry point — sidebar, workspace, result tabs
-├── tests/                       # 141 hermetic unit tests (pytest)
+├── tests/                       # 149 hermetic unit tests (pytest)
 ├── data/                        # Sample input data (gitignored weights)
 ├── output/                      # Session export output directory
 ├── .env.example                 # Environment variable template
