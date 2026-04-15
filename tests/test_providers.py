@@ -121,6 +121,27 @@ class TestOllamaProvider:
         p = OllamaProvider()
         assert p.is_available() is False
 
+    @patch("src.providers.ollama_provider.httpx.post")
+    def test_generate_connection_error(self, mock_post):
+        mock_post.side_effect = httpx.ConnectError("refused")
+
+        from src.providers.ollama_provider import OllamaProvider
+        p = OllamaProvider()
+        with pytest.raises(ProviderConnectionError):
+            p.generate("hello", model="llama3")
+
+    @patch("src.providers.ollama_provider.httpx.post")
+    def test_generate_error_key_in_response(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"error": "model not found"}
+        mock_post.return_value = mock_resp
+
+        from src.providers.ollama_provider import OllamaProvider
+        p = OllamaProvider()
+        with pytest.raises(ProviderError, match="model not found"):
+            p.generate("hello", model="nonexistent")
+
 
 # ======================================================================
 # OpenAI
@@ -193,6 +214,20 @@ class TestOpenAIProvider:
             with pytest.raises(ProviderConnectionError):
                 p.list_models()
 
+    def test_generate_auth_error(self):
+        import openai as _openai
+
+        with patch("src.providers.openai_provider.OpenAIProvider._client") as mock_client:
+            mock_client.return_value.chat.completions.create.side_effect = _openai.AuthenticationError(
+                message="Invalid API key",
+                response=MagicMock(status_code=401),
+                body=None,
+            )
+            from src.providers.openai_provider import OpenAIProvider
+            p = OpenAIProvider(api_key="bad-key")
+            with pytest.raises(ProviderAuthError):
+                p.generate("hello", model="gpt-4o")
+
 
 # ======================================================================
 # Gemini
@@ -248,6 +283,14 @@ class TestGeminiProvider:
             assert "gemini-2.0-flash" in models
             assert "gemini-1.5-pro" in models
             assert "text-bison-001" not in models  # filtered out (no "gemini")
+
+    def test_generate_auth_error(self):
+        with patch("src.providers.gemini_provider.GeminiProvider._client") as mock_client:
+            mock_client.return_value.models.generate_content.side_effect = Exception("API key not valid")
+            from src.providers.gemini_provider import GeminiProvider
+            p = GeminiProvider(api_key="bad-key")
+            with pytest.raises(ProviderAuthError):
+                p.generate("hello", model="gemini-2.0-flash")
 
 
 # ======================================================================

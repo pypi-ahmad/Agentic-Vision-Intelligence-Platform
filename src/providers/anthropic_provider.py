@@ -57,6 +57,8 @@ class AnthropicProvider(LLMProvider):
     def generate(self, prompt: str, *, model: str,
                  images: list[np.ndarray] | None = None,
                  system: str | None = None) -> str:
+        import anthropic as _anthropic
+
         client = self._client()
         content: list[dict[str, Any]] = []
 
@@ -72,5 +74,14 @@ class AnthropicProvider(LLMProvider):
         kwargs: dict[str, Any] = {"model": model, "max_tokens": 2048, "messages": [{"role": "user", "content": content}]}
         if system:
             kwargs["system"] = system
-        resp = client.messages.create(**kwargs)
+        try:
+            resp = client.messages.create(**kwargs)
+        except _anthropic.AuthenticationError as exc:
+            raise ProviderAuthError("Invalid Anthropic API key.") from exc
+        except _anthropic.RateLimitError as exc:
+            raise ProviderRateLimitError("Anthropic rate limit exceeded.") from exc
+        except (_anthropic.APIConnectionError, _anthropic.APITimeoutError) as exc:
+            raise ProviderConnectionError("Cannot reach Anthropic API.") from exc
+        except _anthropic.APIStatusError as exc:
+            raise ProviderError(f"Anthropic API error (HTTP {exc.status_code})") from exc
         return resp.content[0].text if resp.content else ""

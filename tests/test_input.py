@@ -17,6 +17,7 @@ class TestImageArraySource:
         assert packet is not None
         assert packet.source_id == "uploaded.png"
         assert packet.frame.shape == sample_frame.shape
+        assert packet.frame_index == 0
         assert source.read() is None
         source.close()
 
@@ -42,6 +43,27 @@ class TestCameraSource:
         assert packet.source_type == "camera"
         source.close()
         cap.release.assert_called_once()
+
+    @patch("src.input.camera.cv2.VideoCapture")
+    @patch("src.input.camera.get_settings")
+    def test_frame_index_is_zero_based(self, mock_get_settings, mock_capture_cls, sample_frame):
+        """First read() should return frame_index=0, not 1."""
+        cfg = MagicMock(camera_index=0, camera_width=640, camera_height=480)
+        mock_get_settings.return_value = cfg
+
+        cap = MagicMock()
+        cap.isOpened.return_value = True
+        cap.read.return_value = (True, sample_frame)
+        mock_capture_cls.return_value = cap
+
+        from src.input.camera import CameraSource
+
+        source = CameraSource()
+        source.open()
+        p1 = source.read()
+        p2 = source.read()
+        assert p1.frame_index == 0
+        assert p2.frame_index == 1
 
 
 class TestVideoSource:
@@ -70,3 +92,23 @@ class TestVideoSource:
         assert packet.metadata["fps"] == 24.0
         source.close()
         cap.release.assert_called_once()
+
+    @patch("src.input.video.cv2.VideoCapture")
+    def test_frame_index_is_zero_based(self, mock_capture_cls, sample_frame, tmp_path):
+        """First read() should return frame_index=0, not 1."""
+        cap = MagicMock()
+        cap.isOpened.return_value = True
+        cap.get.side_effect = lambda prop: {5: 30.0, 7: 100}.get(prop, 0)
+        cap.read.side_effect = [(True, sample_frame), (True, sample_frame), (False, None)]
+        mock_capture_cls.return_value = cap
+
+        from src.input.video import VideoSource
+
+        video_path = tmp_path / "test.mp4"
+        video_path.write_bytes(b"placeholder")
+        source = VideoSource(video_path)
+        source.open()
+        p1 = source.read()
+        p2 = source.read()
+        assert p1.frame_index == 0
+        assert p2.frame_index == 1

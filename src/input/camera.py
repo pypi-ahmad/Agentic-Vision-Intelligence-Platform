@@ -35,11 +35,12 @@ class CameraSource(InputSource):
         ok, frame = self._cap.read()
         if not ok or frame is None:
             return None
+        idx = self._n
         self._n += 1
         return FramePacket(
             frame=frame,
             timestamp=datetime.now(),
-            frame_index=self._n,
+            frame_index=idx,
             source_id=f"camera:{self._index}",
             source_type=self.source_type,
             metadata={"width": frame.shape[1], "height": frame.shape[0]},

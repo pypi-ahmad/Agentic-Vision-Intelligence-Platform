@@ -68,5 +68,15 @@ class GeminiProvider(LLMProvider):
                 pil = Image.fromarray(rgb)
                 contents.append(pil)
         contents.append(prompt)
-        resp = client.models.generate_content(model=model, contents=contents)
+        try:
+            resp = client.models.generate_content(model=model, contents=contents)
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "api key" in msg or "api_key" in msg or "invalid" in msg or "401" in msg or "403" in msg:
+                raise ProviderAuthError("Invalid Gemini API key.") from exc
+            if "quota" in msg or "429" in msg or "rate" in msg:
+                raise ProviderRateLimitError("Gemini rate limit exceeded.") from exc
+            if "connect" in msg or "timeout" in msg or "resolve" in msg or "network" in msg:
+                raise ProviderConnectionError("Cannot reach Gemini API.") from exc
+            raise ProviderError(f"Gemini generation failed: {exc}") from exc
         return resp.text or ""

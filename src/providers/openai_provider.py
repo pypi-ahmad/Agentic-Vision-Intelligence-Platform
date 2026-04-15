@@ -67,6 +67,8 @@ class OpenAIProvider(LLMProvider):
     def generate(self, prompt: str, *, model: str,
                  images: list[np.ndarray] | None = None,
                  system: str | None = None) -> str:
+        import openai as _openai
+
         client = self._client()
         messages: list[dict[str, Any]] = []
         if system:
@@ -84,5 +86,14 @@ class OpenAIProvider(LLMProvider):
         else:
             messages.append({"role": "user", "content": prompt})
 
-        resp = client.chat.completions.create(model=model, messages=messages, max_tokens=2048)
+        try:
+            resp = client.chat.completions.create(model=model, messages=messages, max_tokens=2048)
+        except _openai.AuthenticationError as exc:
+            raise ProviderAuthError("Invalid OpenAI API key.") from exc
+        except _openai.RateLimitError as exc:
+            raise ProviderRateLimitError("OpenAI rate limit exceeded.") from exc
+        except (_openai.APIConnectionError, _openai.APITimeoutError) as exc:
+            raise ProviderConnectionError("Cannot reach OpenAI API.") from exc
+        except _openai.APIStatusError as exc:
+            raise ProviderError(f"OpenAI API error (HTTP {exc.status_code})") from exc
         return resp.choices[0].message.content or ""

@@ -43,9 +43,21 @@ class OllamaProvider(LLMProvider):
             payload["system"] = system
         if images:
             payload["images"] = [self._encode_image_b64(img) for img in images]
-        r = httpx.post(f"{self._url}/api/generate", json=payload, timeout=120)
-        r.raise_for_status()
-        return r.json().get("response", "")
+        try:
+            r = httpx.post(f"{self._url}/api/generate", json=payload, timeout=120)
+            r.raise_for_status()
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.TimeoutException) as exc:
+            raise ProviderConnectionError(
+                f"Cannot reach Ollama at {self._url} — is it running?"
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise ProviderError(
+                f"Ollama returned HTTP {exc.response.status_code}"
+            ) from exc
+        body = r.json()
+        if "error" in body:
+            raise ProviderError(f"Ollama error: {body['error']}")
+        return body.get("response", "")
 
     def is_available(self) -> bool:
         try:

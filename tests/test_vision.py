@@ -88,6 +88,54 @@ class TestVisionDetector:
 
     @patch("src.vision.detector.load_yolo")
     @patch("src.vision.detector.get_settings")
+    def test_detect_with_zero_confidence_passes_zero(self, mock_settings, mock_load):
+        """detect(confidence=0.0) must forward 0.0 to the model, not the default."""
+        mock_cfg = MagicMock()
+        mock_cfg.yolo_confidence = 0.5
+        mock_cfg.resolve_device.return_value = "cpu"
+        mock_settings.return_value = mock_cfg
+
+        mock_model = MagicMock()
+        mock_result = MagicMock()
+        mock_result.boxes = None
+        mock_result.names = {}
+        mock_result.plot.return_value = np.zeros((10, 10, 3), dtype=np.uint8)
+        mock_model.predict.return_value = [mock_result]
+        mock_load.return_value = mock_model
+
+        from src.vision.detector import VisionDetector
+        det = VisionDetector(variant="YOLO26n", confidence=0.4)
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        det.detect(frame, confidence=0.0)
+        call_kwargs = mock_model.predict.call_args
+        assert call_kwargs[1]["conf"] == 0.0  # not 0.4
+
+    @patch("src.vision.detector.load_yolo")
+    @patch("src.vision.detector.get_settings")
+    def test_track_with_zero_confidence_passes_zero(self, mock_settings, mock_load):
+        """track(confidence=0.0) must forward 0.0 to the model, not the default."""
+        mock_cfg = MagicMock()
+        mock_cfg.yolo_confidence = 0.5
+        mock_cfg.resolve_device.return_value = "cpu"
+        mock_settings.return_value = mock_cfg
+
+        mock_model = MagicMock()
+        mock_result = MagicMock()
+        mock_result.boxes = None
+        mock_result.names = {}
+        mock_result.plot.return_value = np.zeros((10, 10, 3), dtype=np.uint8)
+        mock_model.track.return_value = [mock_result]
+        mock_load.return_value = mock_model
+
+        from src.vision.detector import VisionDetector
+        det = VisionDetector(variant="YOLO26n", confidence=0.4)
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        det.track(frame, confidence=0.0)
+        call_kwargs = mock_model.track.call_args
+        assert call_kwargs[1]["conf"] == 0.0
+
+    @patch("src.vision.detector.load_yolo")
+    @patch("src.vision.detector.get_settings")
     def test_variant_property(self, mock_settings, mock_load):
         mock_cfg = MagicMock()
         mock_cfg.yolo_confidence = 0.4

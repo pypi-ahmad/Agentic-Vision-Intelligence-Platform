@@ -36,10 +36,11 @@ class VideoSource(InputSource):
         ok, frame = self._cap.read()
         if not ok or frame is None:
             return None
+        idx = self._n
         self._n += 1
-        t = self._n / self._fps if self._fps > 0 else 0.0
+        t = idx / self._fps if self._fps > 0 else 0.0
         return FramePacket(
-            frame=frame, timestamp=datetime.now(), frame_index=self._n,
+            frame=frame, timestamp=datetime.now(), frame_index=idx,
             source_id=str(self._path), source_type=self.source_type,
             metadata={"filename": self._path.name, "fps": self._fps,
                        "total_frames": self._total, "video_time_sec": round(t, 3),

@@ -84,8 +84,9 @@ class VisionDetector:
     # ---- detection ---------------------------------------------------
 
     def detect(self, frame: np.ndarray, *, confidence: float | None = None) -> FrameResult:
+        conf = confidence if confidence is not None else self._conf
         results = self._model.predict(
-            source=frame, conf=confidence or self._conf,
+            source=frame, conf=conf,
             device=self._device, verbose=False,
         )
         return self._parse(results)
@@ -93,8 +94,9 @@ class VisionDetector:
     # ---- tracking ----------------------------------------------------
 
     def track(self, frame: np.ndarray, *, confidence: float | None = None, persist: bool = True) -> FrameResult:
+        conf = confidence if confidence is not None else self._conf
         results = self._model.track(
-            source=frame, conf=confidence or self._conf,
+            source=frame, conf=conf,
             device=self._device, persist=persist, verbose=False,
         )
         return self._parse(results)

@@ -140,16 +140,17 @@ def _session_duration_text() -> str:
 def _render_sidebar():
     with st.sidebar:
         st.title("⚙️ Configuration")
-        st.caption(f"Session: {st.session_state.session_id}")
+        st.caption(f"Session `{st.session_state.session_id}`  •  Running {_session_duration_text()}")
 
         # ---- Input Mode ------------------------------------------------
-        st.subheader("Input Mode")
+        st.subheader("Input Source")
         mode = st.radio(
-            "Source",
+            "Mode",
             options=["image", "video", "live"],
             index=["image", "video", "live"].index(st.session_state.mode),
             horizontal=True,
             key="mode_radio",
+            help="**Image**: single-frame analysis  •  **Video**: batch processing with tracking  •  **Live**: real-time camera feed",
         )
         if mode != st.session_state.mode:
             st.session_state.mode = mode
@@ -243,12 +244,13 @@ def _render_sidebar():
         if st.button("🚀 Initialise Pipeline", type="primary", use_container_width=True):
             _initialise_pipeline()
 
+        st.markdown("##### Pipeline Status")
         if not st.session_state.detector_ready:
-            st.info("Configure and click **Initialise Pipeline**.")
+            st.info("Select your settings above and click **Initialise Pipeline** to begin analysis.")
         elif st.session_state.reasoner_ready:
-            st.success(f"CV ready: {st.session_state.yolo_variant} • LLM ready: {st.session_state.provider_name} / {_get_active_model()}")
+            st.success(f"✔ CV: {st.session_state.yolo_variant}  •  LLM: {st.session_state.provider_name} / {_get_active_model()}")
         else:
-            st.warning(f"CV ready: {st.session_state.yolo_variant} • LLM not configured")
+            st.warning(f"✔ CV: {st.session_state.yolo_variant}  •  ✗ LLM not configured — Q&A and reports unavailable")
 
         # ---- Session Controls -------------------------------------------
         st.divider()
@@ -364,15 +366,17 @@ def _render_main():
     mode = st.session_state.mode
     variant = st.session_state.yolo_variant
     recommended = MODE_DEFAULT_MODELS.get(mode, "YOLO26n")
-    override_note = "" if variant == recommended else f" (override — default: {recommended})"
-    tracking = "tracking" if MODE_USES_TRACKING.get(mode, False) else "detect"
-    st.caption(
-        f"Mode: **{mode}** • CV: {variant}{override_note} [{tracking}] "
-        f"• Resize: {MODE_MAX_DIM.get(mode, 1280)}px • Runtime: {_session_duration_text()}"
-    )
+    override_note = "" if variant == recommended else f"  _(default: {recommended})_"
+    tracking = "Tracking" if MODE_USES_TRACKING.get(mode, False) else "Detection"
+    max_res = MODE_MAX_DIM.get(mode, 1280)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(f"**Mode** &nbsp; `{mode}`")
+    c2.markdown(f"**Model** &nbsp; `{variant}`{override_note}")
+    c3.markdown(f"**Pipeline** &nbsp; {tracking} @ {max_res}px")
+    c4.markdown(f"**Session** &nbsp; {_session_duration_text()}")
 
     if not st.session_state.detector_ready:
-        st.info("👈 Configure the pipeline in the sidebar and click **Initialise Pipeline** to begin.")
+        st.info("Open the sidebar to configure your detection model and LLM provider, then click **Initialise Pipeline** to begin.")
         return
 
     if mode == "image":
@@ -404,7 +408,7 @@ def _render_image_mode():
 
     col_in, col_out = st.columns(2)
     with col_in:
-        st.subheader("Input")
+        st.markdown("#### Original")
         st.image(display_frame, use_container_width=True)
 
     # Only re-run CV when the image actually changes (avoid re-detection on every rerun)
@@ -419,7 +423,7 @@ def _render_image_mode():
         result = st.session_state.last_result
 
     with col_out:
-        st.subheader("Detections")
+        st.markdown("#### Detection Results")
         ann = result.get("annotated_frame")
         if ann is not None:
             st.image(bgr_to_rgb(ann), use_container_width=True)
@@ -451,11 +455,11 @@ def _render_video_mode():
         sample_rate = cfg.frame_sample_rate
         display_interval = VIDEO_DISPLAY_INTERVAL
 
-        st.info(
-            f"Video: {total_frames} frames @ {fps:.1f} FPS — "
-            f"sampling every {sample_rate} frame(s), "
-            f"UI refresh every {display_interval} processed frames"
-        )
+        vc1, vc2, vc3 = st.columns(3)
+        vc1.metric("Total Frames", f"{total_frames:,}")
+        vc2.metric("Source FPS", f"{fps:.1f}")
+        vc3.metric("Sample Rate", f"1 / {sample_rate}")
+        st.caption(f"UI refreshes every {display_interval} processed frames for performance.")
 
         progress = st.progress(0.0)
         frame_display = st.empty()
@@ -483,7 +487,7 @@ def _render_video_mode():
 
         source.close()
         progress.progress(1.0)
-        status_display.success(f"Processed {processed} frames from {total_frames} total.")
+        status_display.success(f"Processing complete — {processed} frames analysed out of {total_frames} total.")
 
         if last_result:
             st.session_state.last_result = last_result
@@ -503,16 +507,16 @@ def _render_live_mode():
     """Live mode — YOLO26n default, low-latency track(), suppressed auto-LLM."""
     col_ctrl, col_info = st.columns([1, 3])
     with col_ctrl:
-        run = st.toggle("▶ Start Camera", value=False)
+        run = st.toggle("▶ Camera Feed", value=False)
     with col_info:
         if run:
             st.caption(
-                "Camera active — YOLO26n optimised path. "
-                "Auto-LLM summaries suppressed; use Q&A for on-demand analysis."
+                "Camera active — low-latency pipeline. "
+                "Periodic summaries suppressed; use the Q&A tab for on-demand analysis."
             )
 
     if not run:
-        st.info("Toggle the switch above to start the live camera feed.")
+        st.info("Enable the camera toggle above to start real-time analysis.")
         # Show last result tabs if we have data from previous frames
         if st.session_state.last_result:
             _render_result_tabs(st.session_state.last_result)
@@ -578,28 +582,32 @@ def _render_result_tabs(result: dict):
         timeline = get_event_timeline()
         scene_summary = scene.get_summary()
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Detections", sum(result.get("object_counts", {}).values()))
-        col2.metric("Tracked", scene_summary.get("active_tracked", 0))
-        col3.metric("Events", timeline.count)
-        col4.metric("Alerts", len(st.session_state.alert_manager.unacknowledged))
-        st.markdown(f"**Detection:** {result.get('detection_summary', 'N/A')}")
+        col1.metric("Objects Detected", sum(result.get("object_counts", {}).values()))
+        col2.metric("Active Tracks", scene_summary.get("active_tracked", 0))
+        col3.metric("Events Recorded", timeline.count)
+        col4.metric("Pending Alerts", len(st.session_state.alert_manager.unacknowledged))
+        st.markdown(f"**Detection Summary:** {result.get('detection_summary', 'No detections')}")
         st.caption(scene.get_description())
         counts = result.get("object_counts", {})
         if counts:
             st.bar_chart(counts)
         if result.get("llm_response") and result.get("reasoning_task") in {"summarize", "anomaly", "describe"}:
-            st.markdown("**Agent Insight**")
-            st.write(result.get("llm_response"))
-        st.json(scene_summary)
+            st.markdown("---")
+            st.markdown("**🤖 Agent Insight**")
+            st.info(result.get("llm_response"))
+        with st.expander("Scene State Details", expanded=False):
+            st.json(scene_summary)
 
     # ---- Events
     with tabs[1]:
         tl = get_event_timeline()
         if tl.count:
+            st.markdown(f"**{tl.count} event(s)** recorded this session.")
             st.text(tl.to_text())
-            st.json(tl.get_summary())
+            with st.expander("Event Statistics", expanded=False):
+                st.json(tl.get_summary())
         else:
-            st.info("No events recorded yet.")
+            st.info("No events recorded yet. Events appear as objects enter, exit, or change state in the scene.")
 
     # ---- Alerts
     with tabs[2]:
@@ -613,7 +621,7 @@ def _render_result_tabs(result: dict):
                         am.acknowledge(a.alert_id)
                         st.rerun()
         else:
-            st.info("No unacknowledged alerts.")
+            st.info("No pending alerts. Alerts are generated when significant scene changes or anomalies are detected.")
 
     # ---- Q&A
     with tabs[3]:
@@ -630,14 +638,14 @@ def _render_result_tabs(result: dict):
 
 def _render_qa():
     if get_reasoner() is None:
-        st.warning("Select and initialise an LLM provider to use Q&A.")
+        st.warning("An LLM provider is required for Q&A. Configure one in the sidebar and click **Initialise Pipeline**.")
         return
 
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    question = st.chat_input("Ask about the scene…")
+    question = st.chat_input("Ask a question about the current scene…")
     if question:
         st.session_state.chat_history.append({"role": "user", "content": question})
         with st.chat_message("user"):
@@ -655,7 +663,7 @@ def _render_qa():
 
 def _render_report():
     if get_reasoner() is None:
-        st.warning("Select and initialise an LLM provider to generate reports.")
+        st.warning("An LLM provider is required for report generation. Configure one in the sidebar and click **Initialise Pipeline**.")
         return
 
     if st.button("📝 Generate Report", use_container_width=True):
@@ -667,7 +675,7 @@ def _render_report():
     if st.session_state.get("_last_report"):
         st.markdown(st.session_state["_last_report"])
     else:
-        st.info("Generate a report once you have enough scene history and events.")
+        st.info("Click **Generate Report** to create a comprehensive summary of session activity, detections, and events.")
 
 
 def _render_export():
@@ -697,10 +705,10 @@ def _render_export():
         store.save_text("event_timeline.txt", tl.to_text())
         st.session_state.last_export_dir = str(exp.export_dir)
 
-        st.success(f"Session exported to {exp.export_dir}")
+        st.success(f"Session data exported to `{exp.export_dir}`")
 
     if st.session_state.last_export_dir:
-        st.caption(f"Last export: {st.session_state.last_export_dir}")
+        st.caption(f"Last export location: `{st.session_state.last_export_dir}`")
 
 
 # ======================================================================
