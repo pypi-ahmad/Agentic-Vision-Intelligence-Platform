@@ -19,16 +19,40 @@ _SKIP = frozenset({
     "moderation", "davinci", "babbage", "search",
 })
 
+# Token parameter name differs between chat and reasoning model families.
+# Reasoning models (o1/o3/o4/o-series, and any model beginning with "o")
+# reject ``max_tokens`` and only accept ``max_completion_tokens``.
+_MAX_TOKENS = 2048
+
+
+def _token_param_for(model: str) -> str:
+    mid = model.lower()
+    # ``o1``, ``o3-mini``, ``o3``, ``o4-*`` etc. use the reasoning token name.
+    if mid.startswith("o") and not mid.startswith("omni"):
+        return "max_completion_tokens"
+    # GPT-5/GPT-4o and later reasoning-capable chat models also moved to
+    # max_completion_tokens per OpenAI migration guide.
+    if mid.startswith("gpt-5"):
+        return "max_completion_tokens"
+    return "max_tokens"
+
 
 class OpenAIProvider(LLMProvider):
+    """OpenAI SDK adapter with a cached ``OpenAI`` client per provider instance."""
+
     name = "OpenAI"
 
     def __init__(self, api_key: str):
         self._key = api_key
+        self._client_instance: Any = None
 
+    # Kept as a method so existing tests that patch ``_client`` at class level
+    # continue to work.  Caches the underlying SDK client on first call.
     def _client(self):
-        import openai
-        return openai.OpenAI(api_key=self._key)
+        if self._client_instance is None:
+            import openai
+            self._client_instance = openai.OpenAI(api_key=self._key)
+        return self._client_instance
 
     def list_models(self) -> list[str]:
         import openai as _openai
@@ -56,10 +80,10 @@ class OpenAIProvider(LLMProvider):
             ) from exc
         except _openai.APIStatusError as exc:
             raise ProviderError(
-                f"OpenAI API returned status {exc.status_code}: {exc.message}"
+                f"OpenAI API returned status {exc.status_code}"
             ) from exc
         except Exception as exc:
-            raise ProviderError(f"OpenAI model listing failed: {exc}") from exc
+            raise ProviderError("OpenAI model listing failed.") from exc
 
     def generate(self, prompt: str, *, model: str,
                  images: list[np.ndarray] | None = None,
@@ -83,8 +107,11 @@ class OpenAIProvider(LLMProvider):
         else:
             messages.append({"role": "user", "content": prompt})
 
+        kwargs: dict[str, Any] = {"model": model, "messages": messages}
+        kwargs[_token_param_for(model)] = _MAX_TOKENS
+
         try:
-            resp = client.chat.completions.create(model=model, messages=messages, max_tokens=2048)
+            resp = client.chat.completions.create(**kwargs)
         except _openai.AuthenticationError as exc:
             raise ProviderAuthError("Invalid OpenAI API key.") from exc
         except _openai.RateLimitError as exc:

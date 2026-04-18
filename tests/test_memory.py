@@ -1,11 +1,10 @@
 """Tests for the memory layer — SceneState, EventTimeline."""
 
-import pytest
 
-from src.vision.detector import Detection, FrameResult
-from src.vision.events import SceneEvent
-from src.memory.scene_state import SceneState
 from src.memory.event_timeline import EventTimeline
+from src.memory.scene_state import SceneState
+from src.vision.detector import FrameResult
+from src.vision.events import SceneEvent
 
 
 class TestSceneState:

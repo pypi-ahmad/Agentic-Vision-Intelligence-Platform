@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from config import get_settings
+from src.memory.session_store import _validate_filename, _validate_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ class SessionExporter:
     """Export session artefacts to the output directory."""
 
     def __init__(self, session_id: str | None = None):
-        self._sid = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._sid = _validate_session_id(session_id or datetime.now().strftime("%Y%m%d_%H%M%S"))
         cfg = get_settings()
         self._dir = cfg.output_path / f"session_{self._sid}"
         self._dir.mkdir(parents=True, exist_ok=True)
@@ -55,6 +56,6 @@ class SessionExporter:
         return fp
 
     def save_text(self, filename: str, text: str) -> Path:
-        fp = self._dir / filename
+        fp = self._dir / _validate_filename(filename)
         fp.write_text(text, encoding="utf-8")
         return fp

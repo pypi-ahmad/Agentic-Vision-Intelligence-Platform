@@ -1,8 +1,7 @@
 """Tests for the events module — EventExtractor."""
 
-import pytest
 
-from src.vision.detector import Detection, FrameResult
+from src.vision.detector import FrameResult
 from src.vision.events import EventExtractor, SceneEvent
 
 
@@ -39,7 +38,7 @@ class TestEventExtractor:
 
     def test_cooldown_suppresses(self):
         ex = EventExtractor(cooldown_seconds=9999)
-        events1 = ex.extract(self._frame({"x": 1}))
+        ex.extract(self._frame({"x": 1}))
         ex.extract(self._frame({}))  # x left
         events2 = ex.extract(self._frame({"x": 1}))
         # cooldown prevents second emission

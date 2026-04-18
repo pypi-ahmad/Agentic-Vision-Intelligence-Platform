@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import abc
 import base64
-from typing import Any
+import hashlib
+from functools import lru_cache
 
 import cv2
 import numpy as np
-
 
 # ======================================================================
 # Provider error hierarchy
@@ -68,11 +68,40 @@ class LLMProvider(abc.ABC):
         except Exception:
             return False
 
-    # --- shared helper ------------------------------------------------
+    # --- shared helpers -----------------------------------------------
+
+    @staticmethod
+    def _encode_image_jpeg(image: np.ndarray, quality: int = 85) -> bytes:
+        """Encode a BGR frame as JPEG bytes (pre-base64).
+
+        Result is memoised by ``(image-bytes hash, quality)`` so repeat calls
+        on the same frame in a single perception cycle (e.g. describe + anomaly
+        reasoning) don't re-encode.
+        """
+        key = (hashlib.blake2b(image.tobytes(), digest_size=16).hexdigest(), quality)
+        return _cached_jpeg_encode(key, image.shape, image.dtype.str, image.tobytes(), quality)
 
     @staticmethod
     def _encode_image_b64(image: np.ndarray, quality: int = 85) -> str:
-        ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, quality])
-        if not ok:
-            raise ValueError("Failed to encode image")
-        return base64.b64encode(buf.tobytes()).decode()
+        return base64.b64encode(LLMProvider._encode_image_jpeg(image, quality)).decode()
+
+
+@lru_cache(maxsize=32)
+def _cached_jpeg_encode(
+    _key: tuple[str, int],
+    shape: tuple,
+    dtype_str: str,
+    raw: bytes,
+    quality: int,
+) -> bytes:
+    """Backing store for :meth:`LLMProvider._encode_image_jpeg`.
+
+    Keyed on a BLAKE2b hash of the frame bytes.  ``shape``/``dtype_str``/``raw``
+    are reconstructed into a numpy array for ``cv2.imencode``.  LRU-capped at
+    32 entries (~a few MB) to bound memory.
+    """
+    arr = np.frombuffer(raw, dtype=np.dtype(dtype_str)).reshape(shape)
+    ok, buf = cv2.imencode(".jpg", arr, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    if not ok:
+        raise ValueError("Failed to encode image")
+    return buf.tobytes()

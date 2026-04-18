@@ -14,11 +14,18 @@ venv/
 .venv/
 env/
 
-# IDE
+# IDE / tooling
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
+
+# Coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
 
 # Environment
 .env

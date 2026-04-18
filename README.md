@@ -117,6 +117,7 @@ copy .env.example .env        # Windows
 | `MEMORY_WINDOW_SECONDS` | No | `300` | Rolling window for tracked-object retention |
 | `EVENT_COOLDOWN_SECONDS` | No | `10` | Minimum interval between duplicate events |
 | `LLM_TRIGGER_THRESHOLD` | No | `3` | Event-count bucket size that triggers an LLM summary |
+| `ALLOW_REMOTE_OLLAMA` | No | `false` | Allow the Ollama base URL to point at non-loopback / non-RFC-1918 hosts (SSRF guard opt-in) |
 
 All configuration is managed through **Pydantic Settings** (`config/__init__.py`) with `.env` file support. API keys can also be entered directly in the Streamlit sidebar — they remain in the current session only and are never persisted to disk.
 
@@ -147,7 +148,7 @@ pytest tests/ -v
 pytest tests/ -v --cov=src --cov=config --cov-report=term-missing
 ```
 
-The test suite contains **149 unit tests** covering config, input sources, vision models, memory, orchestration, providers, reporting, session store, and utilities. All tests are hermetic — mocked I/O, no network calls, no filesystem side-effects.
+The test suite contains **185 tests** (unit + integration + security) covering config, input sources, vision models, memory, orchestration end-to-end, providers, reporting, session store, SSRF/URL validation, and utilities. All tests are hermetic — mocked I/O, no network calls, no filesystem side-effects.
 
 ---
 
@@ -193,7 +194,7 @@ The test suite contains **149 unit tests** covering config, input sources, visio
 │   │   └── frame_utils.py       # BGR/RGB conversion, PIL/numpy, proportional resize
 │   └── ui/
 │       └── streamlit_app.py     # Single Streamlit entry point — sidebar, workspace, result tabs
-├── tests/                       # 149 hermetic unit tests (pytest)
+├── tests/                       # 185 hermetic tests — unit, integration, security (pytest)
 ├── data/                        # Sample input data (gitignored weights)
 ├── output/                      # Session export output directory
 ├── .env.example                 # Environment variable template
@@ -229,7 +230,7 @@ The test suite contains **149 unit tests** covering config, input sources, visio
 - **Pipeline:** `track()` with persistence, frames resized to 640px
 - **Frame skipping:** Reads and discards stale buffered frames before processing the latest one
 - **LLM suppression:** Periodic auto-summaries are suppressed in live mode to reduce latency; use the Q&A tab for on-demand analysis
-- **Cycle:** Each processed frame triggers `st.rerun()` for the next capture cycle
+- **Cycle:** The camera is opened once and held in `st.session_state`; the per-frame render loop runs inside an `@st.fragment(run_every=0.1)` block so only the camera widget re-runs, not the whole app
 
 ---
 
@@ -319,20 +320,21 @@ ingest → run_cv → extract_events → update_memory → detect_change
 
 **Conditional routing:**
 - `route_after_ingest` — skips to `finalize` on missing frame
+- `route_after_cv` — short-circuits to `finalize` when CV fails (missing detector, inference error) so memory/event nodes never run on a bad frame
 - `route_after_change` — routes to `create_alert` when warning/alert-severity events are present
 - `route_after_reasoning` — routes to `call_llm` only when `llm_needed` is set (threshold crossing, anomaly, or explicit task)
 
 **LLM gating in live mode:** Periodic bucket-based summaries are suppressed to preserve latency. LLM is still invoked for warnings, alerts, and explicit user-triggered tasks.
 
-### Q&A Graph (4 nodes)
+### Q&A Graph (3 nodes)
 
 Runs on user questions via `ask_question()`:
 
 ```
-qa_cv → [update_memory →] call_llm → finalize
+qa_cv → call_llm → finalize
 ```
 
-If a frame and detector are available, `qa_cv` runs detection first so the LLM answer is grounded in fresh CV data. Otherwise, it uses the existing scene context.
+If a frame and detector are available, `qa_cv` runs detection first so the LLM answer is grounded in fresh CV data. Otherwise, it uses the existing scene context. **Q&A is read-only** — it never writes to scene memory or the event timeline; that is exclusively the perception graph's responsibility.
 
 ### Report Graph (3 nodes)
 
@@ -397,7 +399,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full technical deep-dive, includi
 ## CI / Quality Gates
 
 ```bash
-# Unit tests (149 tests, hermetic, ~4s)
+# Tests (185 tests — unit, integration, security; hermetic)
 pytest tests/ -v
 
 # Tests with coverage
@@ -433,7 +435,9 @@ mypy src/ --ignore-missing-imports
 - **Single-user Streamlit deployment.** The app runs as a single Streamlit process with module-level singletons. It is not designed for concurrent multi-user access. Each browser tab shares the same backend state.
 - **No REST API.** There is no FastAPI or Flask layer. The app is interactive-only via the Streamlit UI.
 - **Blocking video processing.** Video mode processes frames synchronously in a loop. Long videos block the UI until complete. There is no background worker or task queue.
-- **Live mode uses rerun polling.** The camera feed works via `st.rerun()` cycles, not WebSocket streaming. Frame rate is limited by Streamlit's rerun overhead.
+- **Live mode uses a Streamlit fragment.** The camera is opened once and the per-frame renderer runs via `@st.fragment(run_every=0.1)`. Frame rate is still bounded by YOLO + Streamlit fragment overhead.
+- **Ollama URL is sandboxed by default.** The "Ollama URL" text input only accepts loopback / RFC‑1918 targets unless `ALLOW_REMOTE_OLLAMA=1` is set; this prevents SSRF when the app is exposed outside `localhost`.
+- **YOLO weights auto-download on first use.** Ultralytics fetches `.pt` weights from the internet when a variant is loaded for the first time. For locked-down deployments, pre-stage weights locally and set `ULTRALYTICS_OFFLINE=1`.
 - **No model fine-tuning.** YOLO26 models are used with pretrained COCO weights. Custom object classes require retraining outside this application.
 - **LLM latency.** Cloud LLM calls add 1–5 seconds per invocation. The smart gating system mitigates this by only calling the LLM when meaningful events occur.
 - **Provider vision varies.** Each LLM provider handles image input differently (base64, PIL, URL). Some models within a provider may not support vision at all.

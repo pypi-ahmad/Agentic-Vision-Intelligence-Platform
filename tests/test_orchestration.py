@@ -1,37 +1,28 @@
 """Tests for orchestration layer — node functions, routing, and decision logic."""
 
-from unittest.mock import MagicMock, patch
-
-import numpy as np
-import pytest
-
 from src.orchestration import (
-    _EMPTY_STATE,
     _dets_from_state,
     _frame_result_from_state,
-    _scene_state,
-    node_ingest,
-    node_run_cv,
-    node_extract_events,
-    node_update_memory,
-    node_detect_change,
+    empty_state,
+    node_call_llm,
     node_create_alert,
     node_decide_reasoning,
-    node_decide_llm,        # backward-compat alias
-    node_call_llm,
+    node_detect_change,
+    node_extract_events,
     node_finalize,
-    node_qa_cv,
-    _node_qa_cv,             # backward-compat alias
     node_gather_report_context,
-    route_after_ingest,
+    node_ingest,
+    node_qa_cv,
+    node_run_cv,
+    node_update_memory,
+    reset_session,
     route_after_change,
+    route_after_ingest,
     route_after_reasoning,
     route_qa_after_cv,
-    reset_session,
-    empty_state,
-    PipelineState,
 )
-import src.orchestration.nodes as _nodes
+from src.orchestration.graph import route_after_cv
+from src.orchestration.nodes import get_scene_state
 
 
 class TestState:
@@ -43,10 +34,7 @@ class TestState:
         assert s["has_notable_change"] is False
         assert s["change_severity"] == "none"
         assert s["_node_trace"] == []
-
-    def test_backward_compat_empty_state(self):
-        assert _EMPTY_STATE["mode"] == "image"
-        assert _EMPTY_STATE["cv_ran"] is False
+        assert s["last_llm_summary_bucket"] == 0
 
 
 class TestHelpers:
@@ -178,35 +166,34 @@ class TestNodeDecideReasoning:
         assert out["llm_needed"] is True
         assert out["reasoning_task"] == "anomaly"
 
-    def test_threshold_crossing(self):
-        """LLM should only trigger when crossing a new threshold, not every frame."""
-        reset_session()
-        _nodes._last_llm_summary_bucket = 0
-        state = {**empty_state(), "total_event_count": 3, "new_events": []}
+    def test_threshold_crossing_emits_bucket_in_state(self):
+        """Node must emit the new bucket value in its partial-state return."""
+        state = {**empty_state(), "total_event_count": 3, "last_llm_summary_bucket": 0}
         out = node_decide_reasoning(state)
         assert out["llm_needed"] is True
-        # Same count again → should NOT trigger
-        out2 = node_decide_reasoning(state)
-        assert out2["llm_needed"] is False
+        assert out["reasoning_task"] == "summarize"
+        assert out["last_llm_summary_bucket"] == 1
+
+    def test_threshold_same_bucket_does_not_retrigger(self):
+        """Same bucket as last time → no trigger."""
+        state = {**empty_state(), "total_event_count": 3, "last_llm_summary_bucket": 1}
+        out = node_decide_reasoning(state)
+        assert out["llm_needed"] is False
 
     def test_threshold_bucket_handles_jumps(self):
-        reset_session()
-        _nodes._last_llm_summary_bucket = 0
-        out = node_decide_reasoning({**empty_state(), "total_event_count": 5, "new_events": []})
+        """Crossing multiple buckets at once still fires once, with the new bucket."""
+        out = node_decide_reasoning({
+            **empty_state(), "total_event_count": 9, "last_llm_summary_bucket": 0,
+        })
         assert out["llm_needed"] is True
-        out2 = node_decide_reasoning({**empty_state(), "total_event_count": 6, "new_events": []})
-        assert out2["llm_needed"] is True
+        assert out["last_llm_summary_bucket"] == 3
 
     def test_live_mode_suppresses_periodic_summary(self):
-        """In live mode, periodic summaries are suppressed to keep latency low."""
-        reset_session()
-        _nodes._last_llm_summary_bucket = 0
-        state = {**empty_state(), "mode": "live", "total_event_count": 10, "new_events": []}
+        state = {**empty_state(), "mode": "live", "total_event_count": 10}
         out = node_decide_reasoning(state)
         assert out["llm_needed"] is False
 
     def test_live_mode_still_triggers_on_warning(self):
-        """Warnings should still trigger LLM even in live mode."""
         state = {**empty_state(), "mode": "live", "change_severity": "warning"}
         out = node_decide_reasoning(state)
         assert out["llm_needed"] is True
@@ -218,17 +205,10 @@ class TestNodeDecideReasoning:
         assert out["llm_needed"] is True
 
     def test_image_mode_allows_periodic_summary(self):
-        """Image/video modes should still allow periodic LLM summaries."""
-        reset_session()
-        _nodes._last_llm_summary_bucket = 0
-        state = {**empty_state(), "mode": "image", "total_event_count": 3, "new_events": []}
+        state = {**empty_state(), "mode": "image", "total_event_count": 3, "last_llm_summary_bucket": 0}
         out = node_decide_reasoning(state)
         assert out["llm_needed"] is True
         assert out["reasoning_task"] == "summarize"
-
-    def test_backward_compat_alias(self):
-        """node_decide_llm should be the same as node_decide_reasoning."""
-        assert node_decide_llm is node_decide_reasoning
 
 
 class TestNodeCallLLM:
@@ -279,6 +259,13 @@ class TestRouting:
     def test_route_after_ingest_ok(self):
         assert route_after_ingest({"error": ""}) == "run_cv"
 
+    def test_route_after_cv_error_short_circuits(self):
+        """A CV error must skip extract_events/update_memory to avoid polluting scene state."""
+        assert route_after_cv({"error": "Detector not initialised"}) == "finalize"
+
+    def test_route_after_cv_ok(self):
+        assert route_after_cv({"error": ""}) == "extract_events"
+
     def test_route_after_change_warning(self):
         assert route_after_change({"change_severity": "warning"}) == "create_alert"
 
@@ -297,10 +284,9 @@ class TestRouting:
     def test_route_after_reasoning_skip(self):
         assert route_after_reasoning({"llm_needed": False}) == "finalize"
 
-    def test_route_qa_after_cv_ran(self):
-        assert route_qa_after_cv({"cv_ran": True}) == "update_memory"
-
-    def test_route_qa_after_cv_skipped(self):
+    def test_route_qa_after_cv_always_call_llm(self):
+        """Q&A graph no longer runs update_memory — it always goes straight to call_llm."""
+        assert route_qa_after_cv({"cv_ran": True}) == "call_llm"
         assert route_qa_after_cv({"cv_ran": False}) == "call_llm"
 
 
@@ -319,15 +305,8 @@ class TestQACV:
         assert out.get("error", "") == ""
         assert out["cv_ran"] is False
 
-    def test_backward_compat_alias(self):
-        assert _node_qa_cv is node_qa_cv
-
-    def test_route_skips_memory_when_cv_not_run(self):
-        assert route_qa_after_cv({**empty_state(), "cv_ran": False}) == "call_llm"
-
     def test_no_frame_qa_does_not_mutate_scene_memory(self):
         reset_session()
-        before = _scene_state.total_frames
-        out = node_qa_cv({**empty_state(), "current_frame": None})
-        assert route_qa_after_cv(out) == "call_llm"
-        assert _scene_state.total_frames == before
+        before = get_scene_state().total_frames
+        node_qa_cv({**empty_state(), "current_frame": None})
+        assert get_scene_state().total_frames == before

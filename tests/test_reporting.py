@@ -1,10 +1,8 @@
 """Tests for reporting — AlertManager, SessionExporter."""
 
-from pathlib import Path
 
-import pytest
 
-from src.reporting.alerts import Alert, AlertManager
+from src.reporting.alerts import AlertManager
 from src.reporting.exporter import SessionExporter
 
 

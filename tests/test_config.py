@@ -1,8 +1,16 @@
 """Tests for config module."""
 
-import pytest
 
-from config import YOLO_MODELS, MODE_DEFAULT_MODELS, MODE_MAX_DIM, MODE_USES_TRACKING, VIDEO_DISPLAY_INTERVAL, PROVIDERS, Settings, get_settings
+from config import (
+    MODE_DEFAULT_MODELS,
+    MODE_MAX_DIM,
+    MODE_USES_TRACKING,
+    PROVIDERS,
+    VIDEO_DISPLAY_INTERVAL,
+    YOLO_MODELS,
+    Settings,
+    get_settings,
+)
 
 
 class TestSettings:

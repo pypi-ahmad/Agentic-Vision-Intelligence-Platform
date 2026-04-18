@@ -12,29 +12,48 @@ import json
 import logging
 from typing import Any
 
-from config import get_settings, MODE_USES_TRACKING
-from src.vision.detector import Detection, FrameResult, VisionDetector
-from src.vision.events import EventExtractor
-from src.memory.scene_state import SceneState
+from config import MODE_USES_TRACKING, get_settings
 from src.memory.event_timeline import EventTimeline
+from src.memory.scene_state import SceneState
 from src.providers.base import LLMProvider
 from src.reasoning.reasoner import Reasoner
+from src.vision.detector import Detection, FrameResult, VisionDetector
+from src.vision.events import EventExtractor
 
 logger = logging.getLogger(__name__)
 
-_cfg = get_settings()
 
 # ======================================================================
 # Session-scoped singletons (reset via reset_all)
+#
+# Singletons are lazily initialised on first use so that ``.env`` changes
+# take effect without a process restart. ``_last_llm_summary_bucket`` was
+# moved onto PipelineState (see state.py) — nodes now read/write it via the
+# graph's typed state instead of mutating a module global.
 # ======================================================================
 
-_event_extractor = EventExtractor(cooldown_seconds=_cfg.event_cooldown_seconds)
-_scene_state = SceneState(window_seconds=_cfg.memory_window_seconds)
-_event_timeline = EventTimeline()
-_last_llm_summary_bucket: int = 0
+_event_extractor: EventExtractor | None = None
+_scene_state: SceneState | None = None
+_event_timeline: EventTimeline | None = None
 
 _detector: VisionDetector | None = None
 _reasoner: Reasoner | None = None
+
+
+def _ensure_session() -> None:
+    """Lazily construct session-scoped singletons from current settings."""
+    global _event_extractor, _scene_state, _event_timeline
+    if _event_extractor is None or _scene_state is None or _event_timeline is None:
+        cfg = get_settings()
+        if _event_extractor is None:
+            _event_extractor = EventExtractor(cooldown_seconds=cfg.event_cooldown_seconds)
+        if _scene_state is None:
+            _scene_state = SceneState(window_seconds=cfg.memory_window_seconds)
+        if _event_timeline is None:
+            _event_timeline = EventTimeline()
+
+
+_ensure_session()
 
 
 # ---- Singleton accessors / mutators ----------------------------------
@@ -55,11 +74,13 @@ def clear_reasoner() -> None:
 
 
 def get_scene_state() -> SceneState:
-    return _scene_state
+    _ensure_session()
+    return _scene_state  # type: ignore[return-value]
 
 
 def get_event_timeline() -> EventTimeline:
-    return _event_timeline
+    _ensure_session()
+    return _event_timeline  # type: ignore[return-value]
 
 
 def get_reasoner() -> Reasoner | None:
@@ -67,13 +88,15 @@ def get_reasoner() -> Reasoner | None:
 
 
 def reset_all() -> None:
-    global _detector, _reasoner, _last_llm_summary_bucket
+    """Reset session-scoped state — detector, reasoner, memory, timeline, extractor."""
+    global _detector, _reasoner
+    _ensure_session()
+    assert _event_extractor is not None and _scene_state is not None and _event_timeline is not None
     _event_extractor.reset()
     _scene_state.reset()
     _event_timeline.reset()
     _detector = None
     _reasoner = None
-    _last_llm_summary_bucket = 0
 
 
 # ======================================================================
@@ -87,13 +110,26 @@ def _trace(name: str) -> dict[str, Any]:
 
 def _dets_from_state(state: dict[str, Any]) -> list[Detection]:
     """Reconstruct Detection objects from serialised dicts in graph state."""
-    return [
-        Detection(
-            d.get("class_id", 0), d.get("class_name", "?"), d.get("confidence", 0),
-            tuple(d.get("bbox", [0, 0, 0, 0])), d.get("track_id"),
+    out: list[Detection] = []
+    for d in state.get("detections", []):
+        bbox_seq = d.get("bbox", [0, 0, 0, 0])
+        if len(bbox_seq) != 4:
+            raise ValueError(
+                f"Detection bbox must have 4 elements, got {len(bbox_seq)}: {bbox_seq!r}"
+            )
+        bbox: tuple[int, int, int, int] = (
+            int(bbox_seq[0]), int(bbox_seq[1]), int(bbox_seq[2]), int(bbox_seq[3]),
         )
-        for d in state.get("detections", [])
-    ]
+        out.append(
+            Detection(
+                class_id=int(d.get("class_id", 0)),
+                class_name=str(d.get("class_name", "?")),
+                confidence=float(d.get("confidence", 0.0)),
+                bbox=bbox,
+                track_id=d.get("track_id"),
+            )
+        )
+    return out
 
 
 def _frame_result_from_state(state: dict[str, Any]) -> FrameResult:
@@ -140,14 +176,20 @@ def node_run_cv(state: dict[str, Any]) -> dict[str, Any]:
         return {**_trace("run_cv"), "error": "Detector not initialised — select a CV model first"}
 
     mode = state.get("mode", "image")
+    # ``draw`` is sourced from state so callers (process_frame) can suppress
+    # the ~5\u201320 ms annotation overhead on frames that will not be rendered.
+    draw = bool(state.get("draw", True))
     try:
         if MODE_USES_TRACKING.get(mode, False):
-            result = _detector.track(frame, persist=True)
+            result = _detector.track(frame, persist=True, draw=draw)
         else:
-            result = _detector.detect(frame)
+            result = _detector.detect(frame, draw=draw)
     except Exception as exc:
-        logger.error("[run_cv] CV inference failed: %s", exc)
-        return {**_trace("run_cv"), "error": f"CV error: {exc}"}
+        # Redact: raw detector/YOLO exceptions may include file paths, weight
+        # URLs, or CUDA diagnostics — keep detail in logs, surface a stable
+        # category marker to state/UI.
+        logger.error("[run_cv] CV inference failed", exc_info=exc)
+        return {**_trace("run_cv"), "error": "CV inference failed — see logs for details"}
 
     n = len(result.detections)
     logger.debug("[run_cv] %d detections, counts=%s", n, result.object_counts)
@@ -163,6 +205,8 @@ def node_run_cv(state: dict[str, Any]) -> dict[str, Any]:
 
 def node_extract_events(state: dict[str, Any]) -> dict[str, Any]:
     """Extract events by comparing current detections to previous state."""
+    _ensure_session()
+    assert _event_extractor is not None and _event_timeline is not None
     fr = _frame_result_from_state(state)
     events = _event_extractor.extract(fr, frame_index=state.get("frame_index", 0))
     _event_timeline.add_many(events)
@@ -181,6 +225,8 @@ def node_extract_events(state: dict[str, Any]) -> dict[str, Any]:
 
 def node_update_memory(state: dict[str, Any]) -> dict[str, Any]:
     """Update the rolling scene memory with current detections."""
+    _ensure_session()
+    assert _scene_state is not None
     fr = _frame_result_from_state(state)
     _scene_state.update(fr)
 
@@ -249,9 +295,12 @@ def node_decide_reasoning(state: dict[str, Any]) -> dict[str, Any]:
       - explicit ``reasoning_task`` or ``user_question``
       - warning/alert-severity change (→ anomaly reasoning)
       - periodic event-count threshold crossing (image/video only)
-    Suppresses periodic summaries in **live** mode for latency.
+
+    Suppresses periodic summaries in **live** mode for latency.  The
+    "last bucket fired" counter lives on :class:`PipelineState` so the node
+    is a pure function of its input — compatible with LangGraph checkpoint
+    replay and multi-context execution.
     """
-    global _last_llm_summary_bucket
     mode = state.get("mode", "image")
 
     # Explicit task or question → always call LLM
@@ -276,10 +325,10 @@ def node_decide_reasoning(state: dict[str, Any]) -> dict[str, Any]:
 
     # Periodic summary: trigger when crossing a new threshold bucket
     total = state.get("total_event_count", 0)
-    threshold = _cfg.llm_trigger_threshold
+    threshold = get_settings().llm_trigger_threshold
     summary_bucket = total // threshold if threshold > 0 else 0
-    if total > 0 and summary_bucket > _last_llm_summary_bucket:
-        _last_llm_summary_bucket = summary_bucket
+    last_bucket = state.get("last_llm_summary_bucket", 0)
+    if total > 0 and summary_bucket > last_bucket:
         logger.debug(
             "[decide_reasoning] bucket %d → summarize", summary_bucket,
         )
@@ -287,6 +336,7 @@ def node_decide_reasoning(state: dict[str, Any]) -> dict[str, Any]:
             **_trace("decide_reasoning"),
             "llm_needed": True,
             "reasoning_task": "summarize",
+            "last_llm_summary_bucket": summary_bucket,
         }
 
     logger.debug("[decide_reasoning] no trigger → skip")
@@ -353,8 +403,11 @@ def node_call_llm(state: dict[str, Any]) -> dict[str, Any]:
                 object_counts=oc, tracked_objects=scene,
             )
     except Exception as exc:
-        logger.error("[call_llm] LLM error: %s", exc)
-        return {**_trace("call_llm"), "llm_response": "", "error": f"LLM error: {exc}"}
+        # S1: log full detail for operators, surface a redacted marker to the
+        # UI / downstream consumers so raw SDK messages (URLs, partial bodies,
+        # stack fragments) never leak into shared session state.
+        logger.error("[call_llm] LLM error", exc_info=exc)
+        return {**_trace("call_llm"), "llm_response": "", "error": "LLM error — see logs for details"}
 
     result: dict[str, Any] = {**_trace("call_llm"), "llm_response": resp}
     if task == "qa":
@@ -407,6 +460,8 @@ def node_qa_cv(state: dict[str, Any]) -> dict[str, Any]:
 
 def node_gather_report_context(state: dict[str, Any]) -> dict[str, Any]:
     """Assemble current session data for report generation."""
+    _ensure_session()
+    assert _scene_state is not None and _event_timeline is not None
     logger.debug(
         "[gather_report_context] timeline=%d events, tracked=%d",
         _event_timeline.count, len(_scene_state.all_tracked),

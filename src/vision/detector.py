@@ -80,27 +80,29 @@ class VisionDetector:
 
     # ---- detection ---------------------------------------------------
 
-    def detect(self, frame: np.ndarray, *, confidence: float | None = None) -> FrameResult:
+    def detect(self, frame: np.ndarray, *, confidence: float | None = None,
+               draw: bool = True) -> FrameResult:
         conf = confidence if confidence is not None else self._conf
         results = self._model.predict(
             source=frame, conf=conf,
             device=self._device, verbose=False,
         )
-        return self._parse(results)
+        return self._parse(results, draw=draw)
 
     # ---- tracking ----------------------------------------------------
 
-    def track(self, frame: np.ndarray, *, confidence: float | None = None, persist: bool = True) -> FrameResult:
+    def track(self, frame: np.ndarray, *, confidence: float | None = None,
+              persist: bool = True, draw: bool = True) -> FrameResult:
         conf = confidence if confidence is not None else self._conf
         results = self._model.track(
             source=frame, conf=conf,
             device=self._device, persist=persist, verbose=False,
         )
-        return self._parse(results)
+        return self._parse(results, draw=draw)
 
     # ---- internal ----------------------------------------------------
 
-    def _parse(self, results) -> FrameResult:
+    def _parse(self, results, *, draw: bool = True) -> FrameResult:
         dets: list[Detection] = []
         counts: dict[str, int] = {}
         if not results:
@@ -108,7 +110,10 @@ class VisionDetector:
         r = results[0]
         boxes = r.boxes
         names = r.names
-        annotated = r.plot()
+        # ``r.plot()`` runs the full annotation pipeline (\u223c5\u201320 ms on CPU).
+        # Callers that never display the annotated frame (non-display ticks in
+        # video mode) pass ``draw=False`` to skip this work entirely.
+        annotated = r.plot() if draw else None
         if boxes is not None and len(boxes) > 0:
             for i in range(len(boxes)):
                 cid = int(boxes.cls[i].item())

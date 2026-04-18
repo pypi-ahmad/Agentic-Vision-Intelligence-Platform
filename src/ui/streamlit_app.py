@@ -2,42 +2,36 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 import logging
 import os
 import sys
-import tempfile
+import uuid
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
 from PIL import Image
 
-# Add project root to path so imports work when Streamlit runs the file directly
+# Add project root to path so imports work when Streamlit runs the file directly.
+# Must happen before ``config`` / ``src.*`` imports below — linted exceptions
+# are scoped in ``pyproject.toml`` (``[tool.ruff.lint.per-file-ignores]``).
 _ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from config import (
-    PROVIDERS,
-    YOLO_MODELS,
     MODE_DEFAULT_MODELS,
     MODE_MAX_DIM,
     MODE_USES_TRACKING,
+    PROVIDERS,
     VIDEO_DISPLAY_INTERVAL,
+    YOLO_MODELS,
     get_settings,
 )
 from src.input.camera import CameraSource
 from src.input.image import ImageArraySource
 from src.input.video import VideoSource
 from src.memory.session_store import SessionStore
-from src.providers import get_provider
-from src.providers.base import (
-    LLMProvider,
-    ProviderAuthError,
-    ProviderConnectionError,
-    ProviderError,
-    ProviderRateLimitError,
-)
 from src.orchestration import (
     ask_question,
     clear_reasoner,
@@ -50,10 +44,28 @@ from src.orchestration import (
     set_detector,
     set_reasoner,
 )
+from src.providers import get_provider
+from src.providers.base import (
+    LLMProvider,
+    ProviderAuthError,
+    ProviderConnectionError,
+    ProviderError,
+    ProviderRateLimitError,
+)
 from src.reporting.alerts import AlertManager
 from src.reporting.exporter import SessionExporter
 from src.utils.frame_utils import bgr_to_rgb, pil_to_numpy, resize_frame, rgb_to_bgr
 
+# --- Logging configuration --------------------------------------------
+# Users can opt into verbose logging via ``LOG_LEVEL=DEBUG`` in ``.env``
+# or the shell environment; default is INFO so Streamlit's own logs stay
+# readable.  Called once at import time — Streamlit re-imports the script
+# on each rerun, but ``basicConfig`` is a no-op if a root handler exists.
+_log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, _log_level, logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 # ======================================================================
@@ -217,8 +229,8 @@ def _render_sidebar():
             st.warning(f"⏳ {provider_name} rate-limited your request. Wait a moment and retry.")
         elif _err == "empty":
             st.warning(f"No models returned by {provider_name}. The service may be temporarily unavailable.")
-        elif _err.startswith("error:"):
-            st.error(f"Provider error: {_err[6:]}")
+        elif _err == "error":
+            st.error("Provider error — see logs for details.")
 
         # --- Model selector or manual fallback ------------------------
         if st.session_state.available_models and st.session_state.models_provider == provider_name:
@@ -241,7 +253,7 @@ def _render_sidebar():
 
         # ---- Initialise Button ------------------------------------------
         st.divider()
-        if st.button("🚀 Initialise Pipeline", type="primary", use_container_width=True):
+        if st.button("🚀 Initialise Pipeline", type="primary", width="stretch"):
             _initialise_pipeline()
 
         st.markdown("##### Pipeline Status")
@@ -254,7 +266,7 @@ def _render_sidebar():
 
         # ---- Session Controls -------------------------------------------
         st.divider()
-        if st.button("🔄 Reset Session", use_container_width=True):
+        if st.button("🔄 Reset Session", width="stretch"):
             reset_session()
             st.session_state.alert_manager.reset()
             st.session_state.chat_history.clear()
@@ -308,7 +320,11 @@ def _fetch_models():
         st.session_state.models_provider = ""
         return
     except ProviderError as exc:
-        st.session_state._model_fetch_error = f"error:{exc}"
+        # S1: never forward the raw SDK exception message into session state
+        # (may include URLs / headers / partial bodies).  Log full detail for
+        # the operator, show a stable, curated marker to the UI.
+        logger.error("Provider error fetching models from %s", prov_name, exc_info=exc)
+        st.session_state._model_fetch_error = "error"
         st.session_state.available_models = []
         st.session_state.models_provider = ""
         return
@@ -348,13 +364,16 @@ def _initialise_pipeline():
         st.toast("Pipeline initialised!", icon="🚀")
     except ProviderAuthError as exc:
         st.session_state.reasoner_ready = False
-        st.error(f"🔑 LLM auth failed: {exc}")
+        logger.error("LLM auth failed during initialise", exc_info=exc)
+        st.error("🔑 LLM auth failed — check your API key.")
     except ProviderConnectionError as exc:
         st.session_state.reasoner_ready = False
-        st.error(f"🌐 Cannot reach LLM provider: {exc}")
+        logger.error("Cannot reach LLM provider during initialise", exc_info=exc)
+        st.error("🌐 Cannot reach LLM provider — check your network or URL.")
     except Exception as exc:
         st.session_state.reasoner_ready = False
-        st.error(f"Init failed: {exc}")
+        logger.error("Pipeline initialise failed", exc_info=exc)
+        st.error("Init failed — see logs for details.")
 
 
 # ======================================================================
@@ -409,7 +428,7 @@ def _render_image_mode():
     col_in, col_out = st.columns(2)
     with col_in:
         st.markdown("#### Original")
-        st.image(display_frame, use_container_width=True)
+        st.image(display_frame, width="stretch")
 
     # Only re-run CV when the image actually changes (avoid re-detection on every rerun)
     cache_key = f"{uploaded.name}_{uploaded.size}_{st.session_state.yolo_variant}_{st.session_state.confidence}"
@@ -426,7 +445,7 @@ def _render_image_mode():
         st.markdown("#### Detection Results")
         ann = result.get("annotated_frame")
         if ann is not None:
-            st.image(bgr_to_rgb(ann), use_container_width=True)
+            st.image(bgr_to_rgb(ann), width="stretch")
 
     _render_result_tabs(result)
 
@@ -439,19 +458,22 @@ def _render_video_mode():
     if uploaded is None:
         return
 
+    # C9: write uploads into the session's output directory (same mount as
+    # exports) instead of %TEMP% so a crash / browser refresh leaves the file
+    # in a predictable, user-discoverable location and clean-up with
+    # ``Path.unlink(missing_ok=True)`` is sufficient on Windows.
+    cfg = get_settings()
     max_dim = MODE_MAX_DIM.get("video", 960)
-    tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-    tmp_path = tfile.name
+    tmp_dir = cfg.output_path / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / f"upload_{uuid.uuid4().hex}.mp4"
+    tmp_path.write_bytes(uploaded.getbuffer())
     try:
-        tfile.write(uploaded.read())
-        tfile.flush()
-        tfile.close()
-        source = VideoSource(tmp_path)
+        source = VideoSource(str(tmp_path))
         source.open()
         total_frames = source.total_frames
         fps = source.fps
 
-        cfg = get_settings()
         sample_rate = cfg.frame_sample_rate
         display_interval = VIDEO_DISPLAY_INTERVAL
 
@@ -473,15 +495,24 @@ def _render_video_mode():
                 break
             if packet.frame_index % sample_rate == 0:
                 frame_bgr = resize_frame(packet.frame, max_dim=max_dim)
-                result = process_frame(frame_bgr, mode="video", source_id=packet.source_id, frame_index=packet.frame_index)
+                # P1/QW8: only annotate the frames we're about to display.
+                display_tick = (processed + 1) % display_interval == 0 or (
+                    packet.frame_index + sample_rate >= total_frames
+                )
+                result = process_frame(
+                    frame_bgr,
+                    mode="video",
+                    source_id=packet.source_id,
+                    frame_index=packet.frame_index,
+                    draw=display_tick,
+                )
                 last_result = result
                 _ingest_alerts(result)
                 processed += 1
-                # Throttle UI updates — only render every N processed frames
-                if processed % display_interval == 0 or packet.frame_index + sample_rate >= total_frames:
+                if display_tick:
                     ann = result.get("annotated_frame")
                     if ann is not None:
-                        frame_display.image(bgr_to_rgb(ann), use_container_width=True)
+                        frame_display.image(bgr_to_rgb(ann), width="stretch")
                     status_display.caption(f"Frame {packet.frame_index}/{total_frames} — {result.get('detection_summary', '')}")
                     progress.progress(min(packet.frame_index / max(total_frames, 1), 1.0))
 
@@ -493,9 +524,10 @@ def _render_video_mode():
             st.session_state.last_result = last_result
             _render_result_tabs(last_result)
     finally:
-        # Clean up temp file
+        # Best-effort clean-up; if the file was already removed or never
+        # created, ``missing_ok=True`` silently succeeds.
         try:
-            os.unlink(tmp_path)
+            Path(tmp_path).unlink(missing_ok=True)
         except OSError as exc:
             logger.debug("Unable to remove temporary video file %s: %s", tmp_path, exc)
 
@@ -503,65 +535,117 @@ def _render_video_mode():
 
 # ---- Live Camera Mode ------------------------------------------------
 
+def _get_or_open_camera() -> CameraSource | None:
+    """Return a camera source kept alive across reruns.
+
+    Opening ``cv2.VideoCapture`` on Windows' DShow/MSMF backend can cost
+    500\u20133000 ms, so we stash a single instance on ``st.session_state`` and
+    only open it once per "Camera Feed" toggle cycle.  Failure is surfaced
+    via ``st.error`` and leaves the slot empty so the fragment simply stops.
+    """
+    cam = st.session_state.get("_live_cam_source")
+    if cam is not None:
+        return cam
+    try:
+        cfg = get_settings()
+        cam = CameraSource(camera_index=cfg.camera_index)
+        cam.open()
+    except Exception as exc:  # pragma: no cover \u2014 depends on hardware
+        logger.error("Cannot open camera", exc_info=exc)
+        st.error("Cannot open camera. See logs for details.")
+        st.session_state._live_cam_source = None
+        return None
+    st.session_state._live_cam_source = cam
+    return cam
+
+
+def _release_camera() -> None:
+    cam = st.session_state.get("_live_cam_source")
+    if cam is not None:
+        try:
+            cam.close()
+        except Exception:  # pragma: no cover
+            pass
+        st.session_state._live_cam_source = None
+
+
 def _render_live_mode():
-    """Live mode — YOLO26n default, low-latency track(), suppressed auto-LLM."""
+    """Live mode \u2014 YOLO26n default, low-latency track(), suppressed auto-LLM.
+
+    C3/P3/N1: the camera is opened once and the per-frame render loop is
+    hosted in an ``st.fragment`` that re-runs on its own timer instead of
+    via full-script ``st.rerun()``, eliminating the open/close-per-rerun
+    pattern that was unusable on Windows.
+    """
     col_ctrl, col_info = st.columns([1, 3])
     with col_ctrl:
-        run = st.toggle("▶ Camera Feed", value=False)
+        run = st.toggle("\u25b6 Camera Feed", value=False, key="_live_cam_toggle")
     with col_info:
         if run:
             st.caption(
-                "Camera active — low-latency pipeline. "
+                "Camera active \u2014 low-latency pipeline. "
                 "Periodic summaries suppressed; use the Q&A tab for on-demand analysis."
             )
 
     if not run:
+        _release_camera()
         st.info("Enable the camera toggle above to start real-time analysis.")
-        # Show last result tabs if we have data from previous frames
         if st.session_state.last_result:
             _render_result_tabs(st.session_state.last_result)
         return
 
-    cfg = get_settings()
-    max_dim = MODE_MAX_DIM.get("live", 640)
-    frame_holder = st.empty()
-    info_holder = st.empty()
-
-    source = CameraSource(camera_index=cfg.camera_index)
-    try:
-        source.open()
-    except Exception as exc:
-        st.error(f"Cannot open camera: {exc}")
+    cam = _get_or_open_camera()
+    if cam is None:
         return
 
-    # Read the latest frame, skip stale buffered frames for freshness
+    _live_camera_fragment()
+
+    if st.session_state.last_result:
+        _render_result_tabs(st.session_state.last_result)
+
+
+@st.fragment(run_every=0.1)
+def _live_camera_fragment() -> None:
+    """Inner render loop \u2014 fragment re-runs only this block, not the whole app."""
+    cam: CameraSource | None = st.session_state.get("_live_cam_source")
+    if cam is None:
+        return
+
+    cfg = get_settings()
+    max_dim = MODE_MAX_DIM.get("live", 640)
+
+    # Drain up to ``skip_count`` buffered frames so we show the freshest image.
     packet = None
-    skip_count = min(cfg.frame_sample_rate, 3)  # cap skips to keep cycle fast
-    for _ in range(max(1, skip_count)):
-        packet = source.read()
-        if packet is None:
+    skip_count = max(1, min(cfg.frame_sample_rate, 3))
+    for _ in range(skip_count):
+        nxt = cam.read()
+        if nxt is None:
             break
-    source.close()
+        packet = nxt
 
     if packet is None:
         st.warning("Camera read failed.")
         return
 
-    # Resize to smaller dim for faster YOLO inference in live mode
     frame_bgr = resize_frame(packet.frame, max_dim=max_dim)
-    result = process_frame(frame_bgr, mode="live", source_id=packet.source_id, frame_index=packet.frame_index + st.session_state.frame_index)
+    # M6: the session counter advances monotonically; packet.frame_index is
+    # per-``open()`` and now unused in the emitted frame number.
+    st.session_state.frame_index += 1
+    fi = st.session_state.frame_index
+    result = process_frame(
+        frame_bgr,
+        mode="live",
+        source_id=packet.source_id,
+        frame_index=fi,
+        draw=True,
+    )
     st.session_state.last_result = result
-    st.session_state.frame_index += max(1, skip_count)
     _ingest_alerts(result)
+
     ann = result.get("annotated_frame")
     if ann is not None:
-        frame_holder.image(bgr_to_rgb(ann), use_container_width=True)
-    info_holder.caption(f"Frame {st.session_state.frame_index} — {result.get('detection_summary', '')}")
-
-    _render_result_tabs(result)
-
-    # Trigger next cycle
-    st.rerun()
+        st.image(bgr_to_rgb(ann), width="stretch")
+    st.caption(f"Frame {fi} \u2014 {result.get('detection_summary', '')}")
 
 
 # ======================================================================
@@ -666,7 +750,7 @@ def _render_report():
         st.warning("An LLM provider is required for report generation. Configure one in the sidebar and click **Initialise Pipeline**.")
         return
 
-    if st.button("📝 Generate Report", use_container_width=True):
+    if st.button("📝 Generate Report", width="stretch"):
         with st.spinner("Generating report…"):
             res = generate_report(session_id=st.session_state.session_id, duration=_session_duration_text())
             report = res.get("report", res.get("llm_response", ""))
@@ -679,7 +763,7 @@ def _render_report():
 
 
 def _render_export():
-    if st.button("💾 Export Session", use_container_width=True):
+    if st.button("💾 Export Session", width="stretch"):
         exp = SessionExporter(session_id=st.session_state.session_id)
         store = SessionStore(session_id=st.session_state.session_id)
 

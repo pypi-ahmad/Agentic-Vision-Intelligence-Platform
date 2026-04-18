@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-vision-intelligence-platform"
+version = "0.1.0"
+description = "Streamlit-hosted LangGraph + YOLO26 + multimodal-LLM platform for live/video/image scene understanding."
+readme = "README.md"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = [".venv", "output", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    # Long single-line strings in prompt templates / structured error branches.
+    "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The path-bootstrap block at module top requires a ``sys.path.insert``
+# before the heavy imports so ``streamlit run src/ui/streamlit_app.py``
+# resolves ``config`` / ``src.*`` when invoked directly.  E402 here is
+# intentional, not a style lapse.
+"src/ui/streamlit_app.py" = ["E402"]
+# Tests intentionally import fixtures for side-effects (autouse / patching).
+"tests/**" = ["F401", "F841"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["config", "src"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = true
+check_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

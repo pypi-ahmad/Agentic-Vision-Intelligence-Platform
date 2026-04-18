@@ -10,24 +10,24 @@ Three workflows are defined:
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from langgraph.graph import END, StateGraph
 
-from src.orchestration.state import PipelineState
 from src.orchestration.nodes import (
-    node_ingest,
-    node_run_cv,
-    node_extract_events,
-    node_update_memory,
-    node_detect_change,
+    node_call_llm,
     node_create_alert,
     node_decide_reasoning,
-    node_call_llm,
+    node_detect_change,
+    node_extract_events,
     node_finalize,
-    node_qa_cv,
     node_gather_report_context,
+    node_ingest,
+    node_qa_cv,
+    node_run_cv,
+    node_update_memory,
 )
+from src.orchestration.state import PipelineState
 
 logger = logging.getLogger(__name__)
 
@@ -36,14 +36,27 @@ logger = logging.getLogger(__name__)
 # Routing functions
 # ======================================================================
 
-def route_after_ingest(state: dict[str, Any]) -> str:
+def route_after_ingest(state: dict[str, Any]) -> Literal["run_cv", "finalize"]:
     """Short-circuit to finalize if ingest detected an error (e.g. missing frame)."""
     if state.get("error"):
         return "finalize"
     return "run_cv"
 
 
-def route_after_change(state: dict[str, Any]) -> str:
+def route_after_cv(state: dict[str, Any]) -> Literal["extract_events", "finalize"]:
+    """Short-circuit to finalize if CV failed (missing detector, inference error).
+
+    Without this, a failed frame still runs through extract_events → update_memory
+    → detect_change, which silently increments scene totals and wipes counts.
+    """
+    if state.get("error"):
+        return "finalize"
+    return "extract_events"
+
+
+def route_after_change(
+    state: dict[str, Any],
+) -> Literal["create_alert", "decide_reasoning"]:
     """Route based on change severity: warnings/alerts → create_alert first."""
     sev = state.get("change_severity", "none")
     if sev in ("warning", "alert"):
@@ -51,14 +64,16 @@ def route_after_change(state: dict[str, Any]) -> str:
     return "decide_reasoning"
 
 
-def route_after_reasoning(state: dict[str, Any]) -> str:
+def route_after_reasoning(
+    state: dict[str, Any],
+) -> Literal["call_llm", "finalize"]:
     """Call the LLM only when reasoning was deemed necessary."""
     return "call_llm" if state.get("llm_needed") else "finalize"
 
 
-def route_qa_after_cv(state: dict[str, Any]) -> str:
-    """In Q&A workflow: update memory if CV ran, otherwise skip to LLM."""
-    return "update_memory" if state.get("cv_ran") else "call_llm"
+def route_qa_after_cv(state: dict[str, Any]) -> Literal["call_llm"]:
+    """Q&A never mutates scene memory — always proceed directly to the LLM."""
+    return "call_llm"
 
 
 # ======================================================================
@@ -98,7 +113,10 @@ def build_perception_graph() -> StateGraph:
         "run_cv": "run_cv",
         "finalize": "finalize",
     })
-    g.add_edge("run_cv", "extract_events")
+    g.add_conditional_edges("run_cv", route_after_cv, {
+        "extract_events": "extract_events",
+        "finalize": "finalize",
+    })
     g.add_edge("extract_events", "update_memory")
     g.add_edge("update_memory", "detect_change")
     g.add_conditional_edges("detect_change", route_after_change, {
@@ -119,22 +137,21 @@ def build_perception_graph() -> StateGraph:
 def build_qa_graph() -> StateGraph:
     """Q&A workflow::
 
-        qa_cv ─┬─► update_memory → call_llm → finalize
-               └─► call_llm → finalize
+        qa_cv → call_llm → finalize
+
+    Q&A is a *read* operation from the user's perspective. It optionally runs
+    CV on the supplied frame for fresh detection grounding, but it never
+    updates the session's scene memory or event timeline — those belong to
+    the perception pipeline.
     """
     g = StateGraph(PipelineState)
 
     g.add_node("qa_cv", node_qa_cv)
-    g.add_node("update_memory", node_update_memory)
     g.add_node("call_llm", node_call_llm)
     g.add_node("finalize", node_finalize)
 
     g.set_entry_point("qa_cv")
-    g.add_conditional_edges("qa_cv", route_qa_after_cv, {
-        "update_memory": "update_memory",
-        "call_llm": "call_llm",
-    })
-    g.add_edge("update_memory", "call_llm")
+    g.add_edge("qa_cv", "call_llm")
     g.add_edge("call_llm", "finalize")
     g.add_edge("finalize", END)
 

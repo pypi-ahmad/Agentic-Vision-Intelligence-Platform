@@ -1,10 +1,9 @@
 """Tests for frame utilities."""
 
 import numpy as np
-import pytest
 from PIL import Image
 
-from src.utils.frame_utils import bgr_to_rgb, rgb_to_bgr, pil_to_numpy, numpy_to_pil, resize_frame
+from src.utils.frame_utils import bgr_to_rgb, numpy_to_pil, pil_to_numpy, resize_frame, rgb_to_bgr
 
 
 class TestColorConversion:

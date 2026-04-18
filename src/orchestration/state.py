@@ -29,6 +29,7 @@ class PipelineState(TypedDict, total=False):
     object_counts: dict[str, int]           # {class_name: count}
     detection_summary: str                  # human-readable one-liner
     annotated_frame: Any                    # np.ndarray with overlays or None
+    draw: bool                              # whether node_run_cv should annotate
 
     # ---- Scene memory ------------------------------------------------
     scene_description: str                  # rolling description from SceneState
@@ -47,6 +48,7 @@ class PipelineState(TypedDict, total=False):
     llm_needed: bool                        # whether LLM should be called
     reasoning_task: str                     # "" | "describe" | "summarize" | "anomaly" | "qa" | "report" | "alert"
     llm_response: str                       # raw LLM output
+    last_llm_summary_bucket: int            # last event-count bucket that triggered a summary
 
     # ---- Q&A ---------------------------------------------------------
     user_question: str                      # user's question text
@@ -78,6 +80,7 @@ def empty_state() -> dict[str, Any]:
         object_counts={},
         detection_summary="",
         annotated_frame=None,
+        draw=True,
         scene_description="",
         scene_summary={},
         new_events=[],
@@ -88,6 +91,7 @@ def empty_state() -> dict[str, Any]:
         llm_needed=False,
         reasoning_task="",
         llm_response="",
+        last_llm_summary_bucket=0,
         user_question="",
         answer="",
         alerts=[],

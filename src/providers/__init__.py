@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.providers.anthropic_provider import AnthropicProvider
 from src.providers.base import (
     LLMProvider,
     ProviderAuthError,
@@ -9,10 +10,9 @@ from src.providers.base import (
     ProviderError,
     ProviderRateLimitError,
 )
+from src.providers.gemini_provider import GeminiProvider
 from src.providers.ollama_provider import OllamaProvider
 from src.providers.openai_provider import OpenAIProvider
-from src.providers.gemini_provider import GeminiProvider
-from src.providers.anthropic_provider import AnthropicProvider
 
 __all__ = [
     "get_provider",

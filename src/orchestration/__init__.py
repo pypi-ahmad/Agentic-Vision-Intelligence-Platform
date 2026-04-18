@@ -31,44 +31,11 @@ __all__ = [
     # Graph builders & routing
     "build_perception_graph", "build_qa_graph", "build_report_graph",
     "get_perception_wf", "get_qa_wf", "get_report_wf",
-    "route_after_ingest", "route_after_change",
+    "route_after_ingest", "route_after_cv", "route_after_change",
     "route_after_reasoning", "route_qa_after_cv",
 ]
 
 # ---- State -----------------------------------------------------------
-from src.orchestration.state import PipelineState, empty_state  # noqa: F401
-
-# ---- Singleton management (set from UI) ------------------------------
-from src.orchestration.nodes import (  # noqa: F401
-    set_detector,
-    set_reasoner_obj as set_reasoner,
-    clear_reasoner,
-    get_scene_state,
-    get_event_timeline,
-    get_reasoner,
-    reset_all as reset_session,
-    # helpers (used by tests / advanced callers)
-    _dets_from_state,
-    _frame_result_from_state,
-    # expose singletons for test assertions
-    _scene_state,
-)
-
-# ---- Node functions (re-exported for direct testing) -----------------
-from src.orchestration.nodes import (  # noqa: F401
-    node_ingest,
-    node_run_cv,
-    node_extract_events,
-    node_update_memory,
-    node_detect_change,
-    node_create_alert,
-    node_decide_reasoning,
-    node_call_llm,
-    node_finalize,
-    node_qa_cv,
-    node_gather_report_context,
-)
-
 # ---- Graph builders & routing ----------------------------------------
 from src.orchestration.graph import (  # noqa: F401
     build_perception_graph,
@@ -77,18 +44,65 @@ from src.orchestration.graph import (  # noqa: F401
     get_perception_wf,
     get_qa_wf,
     get_report_wf,
-    route_after_ingest,
     route_after_change,
+    route_after_cv,
+    route_after_ingest,
     route_after_reasoning,
     route_qa_after_cv,
 )
 
-# ---- Backward-compatibility aliases ---------------------------------
-node_decide_llm = node_decide_reasoning  # old name used in existing tests
-_node_qa_cv = node_qa_cv                 # old private name
+# ---- Singleton management (set from UI) ------------------------------
+# ---- Node functions (re-exported for direct testing) -----------------
+from src.orchestration.nodes import (  # noqa: F401  # noqa: F401
+    # helpers (used by tests / advanced callers)
+    _dets_from_state,
+    _frame_result_from_state,
+    clear_reasoner,
+    get_event_timeline,
+    get_reasoner,
+    get_scene_state,
+    node_call_llm,
+    node_create_alert,
+    node_decide_reasoning,
+    node_detect_change,
+    node_extract_events,
+    node_finalize,
+    node_gather_report_context,
+    node_ingest,
+    node_qa_cv,
+    node_run_cv,
+    node_update_memory,
+    set_detector,
+)
+from src.orchestration.nodes import (
+    reset_all as _reset_all_singletons,
+)
+from src.orchestration.nodes import (
+    set_reasoner_obj as set_reasoner,
+)
+from src.orchestration.state import PipelineState, empty_state  # noqa: F401
 
-# Kept for old code that does {**_EMPTY_STATE, ...}
-_EMPTY_STATE = empty_state()
+# ======================================================================
+# CROSS-FRAME STATE
+# ======================================================================
+#
+# ``last_llm_summary_bucket`` lives on PipelineState so that every node is a
+# pure function of its input.  The "once per bucket" gate, however, needs to
+# survive across successive frames — each frame is a fresh graph invocation
+# with a fresh state.  A tiny module-scoped cache bridges frames without
+# adding any cross-session coupling.  It is reset by ``reset_session()``.
+
+_summary_bucket_cache: list[int] = [0]
+
+
+def reset_session() -> None:
+    """Reset every session-scoped singleton and cross-frame cache.
+
+    Wraps :func:`_reset_all_singletons` so both the detector/reasoner/memory
+    singletons *and* the cross-frame summary-bucket counter clear together.
+    """
+    _reset_all_singletons()
+    _summary_bucket_cache[0] = 0
 
 
 # ======================================================================
@@ -101,24 +115,41 @@ def process_frame(
     mode: str = "image",
     source_id: str = "",
     frame_index: int = 0,
+    draw: bool = True,
 ) -> dict[str, Any]:
-    """Run the full perception pipeline on a single frame."""
+    """Run the full perception pipeline on a single frame.
+
+    ``draw=False`` suppresses annotation rendering in ``node_run_cv`` when
+    the caller will not display the annotated frame (e.g. non-display ticks
+    in video mode); detections and counts are still produced.
+    """
     s = {
         **empty_state(),
         "mode": mode,
         "current_frame": frame,
         "source_id": source_id,
         "frame_index": frame_index,
+        "draw": draw,
+        # Carry forward the last-fired summary bucket across frames.
+        "last_llm_summary_bucket": _summary_bucket_cache[0],
     }
-    return get_perception_wf().invoke(s)
+    out = get_perception_wf().invoke(s)
+    _summary_bucket_cache[0] = out.get("last_llm_summary_bucket", _summary_bucket_cache[0])
+    return out
 
 
 def ask_question(
     question: str, *, frame=None, mode: str = "image"
 ) -> dict[str, Any]:
-    """Answer a user question, optionally enriched with CV context."""
-    from src.orchestration.nodes import _event_timeline, _scene_state as _ss
+    """Answer a user question, optionally enriched with CV context.
 
+    Q&A is read-only — it never mutates scene memory or the event timeline.
+    All context is pre-populated here from the current session state.
+    """
+    from src.orchestration.nodes import get_event_timeline, get_scene_state
+
+    tl = get_event_timeline()
+    ss = get_scene_state()
     s = {
         **empty_state(),
         "mode": mode,
@@ -126,10 +157,10 @@ def ask_question(
         "llm_needed": True,
         "reasoning_task": "qa",
         "user_question": question,
-        "event_history_text": _event_timeline.to_text(),
-        "total_event_count": _event_timeline.count,
-        "scene_description": _ss.get_description(),
-        "scene_summary": _ss.get_summary(),
+        "event_history_text": tl.to_text(),
+        "total_event_count": tl.count,
+        "scene_description": ss.get_description(),
+        "scene_summary": ss.get_summary(),
     }
     return get_qa_wf().invoke(s)
 

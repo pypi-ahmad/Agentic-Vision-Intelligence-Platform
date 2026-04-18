@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ROOT = Path(__file__).resolve().parent.parent
 
@@ -13,7 +13,11 @@ _ROOT = Path(__file__).resolve().parent.parent
 class Settings(BaseSettings):
     """Application-wide settings loaded from environment / .env."""
 
-    model_config = {"env_file": str(_ROOT / ".env"), "env_file_encoding": "utf-8", "extra": "ignore"}
+    model_config = SettingsConfigDict(
+        env_file=str(_ROOT / ".env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     # --- Provider keys (optional) ---
     ollama_base_url: str = Field("http://localhost:11434", description="Ollama API base URL")
@@ -37,6 +41,13 @@ class Settings(BaseSettings):
 
     # --- Reporting ---
     report_output_dir: str = Field("output")
+
+    # --- Security ---
+    # Allow the Ollama base URL to point at arbitrary remote hosts.  When
+    # ``False`` (default), only loopback / private-RFC-1918 targets are
+    # accepted \u2014 this prevents SSRF via the Streamlit "Ollama URL" input
+    # in hosted deployments.
+    allow_remote_ollama: bool = Field(False)
 
     # --- Derived ---
     @property
